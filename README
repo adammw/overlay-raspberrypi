@@ -1,4 +1,5 @@
 Porting ArmV7 assembler in ChromiumOS for ArmV6.
  
+12th Feb 2012: Close to building packages.
  4th Feb 2012: Some packages fail with "-marm", others require it for embedded code.
  1st Feb 2012: This may take a while.
