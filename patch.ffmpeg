@@ -1,0 +1,30 @@
+--- chromium/src/third_party/ffmpeg/ffmpeg.gyp	2012-02-15 09:56:12.803074092 +0000
++++ chromium/src/third_party/ffmpeg/ffmpeg.gyp	2012-02-15 10:02:30.885123862 +0000
+@@ -162,20 +162,22 @@
+               # TODO(ihf): See the long comment in build_ffmpeg.sh
+               # We want to be consistent with CrOS and have configured
+               # ffmpeg for thumb. Protect yourself from -marm.
++              #
++              # !!Swap from thumb to arm, subject to testing!!
+               'cflags!': [
+-                '-marm',
++                '-mthumb',
+               ],
+               'cflags': [
+                 '-fPIC',
+-                '-mthumb',
+-                '-march=armv7-a',
+-                '-mtune=cortex-a8',
++                '-marm',
++                '-march=armv6j',
++                '-mtune=arm1176jzf-s',
+                 '-mfloat-abi=softfp',
+               ],
+               'conditions': [
+                 ['arm_neon == 0', {
+                   'cflags': [
+-                    '-mfpu=vfpv3-d16',
++                    '-mfpu=vfp',
+                   ],
+                 }],
+                 ['arm_neon == 1', {
