@@ -6,7 +6,6 @@ Initial notes:
 
 * Don't expect to build this and have it work perfectly on a Raspberry Pi, it's a work-in-progress
 * This guide will be much easier to follow if you've built Chromium OS before for another platform. If you've having trouble following it, try following the developer guide (linked before) to build an x86-generic image first, and then come back.
-* These instructions assume that a couple of patches are in place, which are currently waiting to be merged. Until they're merged, apply them manually: http://chromiumcodereview.appspot.com/10387100 and https://gerrit.chromium.org/gerrit/#change,22536
 * If you want to help out, find me in #raspberrypi on Freenode IRC or submit a pull request
 
 Prerequisites:

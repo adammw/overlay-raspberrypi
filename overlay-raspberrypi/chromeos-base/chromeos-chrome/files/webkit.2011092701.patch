@@ -1,0 +1,2113 @@
+diff --git third_party/WebKit/Source/WebCore/WebCore.gypi third_party/WebKit/Source/WebCore/WebCore.gypi
+index 4d27aa3..4725180 100644
+--- third_party/WebKit/Source/WebCore/WebCore.gypi
++++ third_party/WebKit/Source/WebCore/WebCore.gypi
+@@ -2245,6 +2245,7 @@
+             'bridge/c/c_utility.cpp',
+             'bridge/c/c_utility.h',
+             'bridge/jni/JNIUtility.cpp',
++            'bridge/jni/JavaString.h',
+             'bridge/jni/JavaType.h',
+             'bridge/jni/JobjectWrapper.cpp',
+             'bridge/jni/JobjectWrapper.h',
+@@ -3165,6 +3166,8 @@
+             'platform/chromium/DataTransferItemChromium.h',
+             'platform/chromium/DataTransferItemsChromium.cpp',
+             'platform/chromium/DataTransferItemsChromium.h',
++            'platform/chromium/DoubleTapGestureChromium.cpp',
++            'platform/chromium/DoubleTapGestureChromium.h',
+             'platform/chromium/DragDataChromium.cpp',
+             'platform/chromium/DragDataRef.h',
+             'platform/chromium/DragImageChromiumMac.cpp',
+@@ -3174,6 +3177,10 @@
+             'platform/chromium/FileSystemChromiumLinux.cpp',
+             'platform/chromium/FileSystemChromiumMac.mm',
+             'platform/chromium/FileSystemChromiumWin.cpp',
++            'platform/chromium/FlickAnimator.cpp',
++            'platform/chromium/FlickAnimator.h',
++            'platform/chromium/FlickGestureChromium.cpp',
++            'platform/chromium/FlickGestureChromium.h',
+             'platform/chromium/FramelessScrollView.cpp',
+             'platform/chromium/FramelessScrollView.h',
+             'platform/chromium/FramelessScrollViewClient.h',
+diff --git third_party/WebKit/Source/WebCore/page/EventHandler.cpp third_party/WebKit/Source/WebCore/page/EventHandler.cpp
+index 429b920..c55db4f 100644
+--- third_party/WebKit/Source/WebCore/page/EventHandler.cpp
++++ third_party/WebKit/Source/WebCore/page/EventHandler.cpp
+@@ -2207,14 +2207,33 @@ void EventHandler::defaultWheelEventHandler(Node* startNode, WheelEvent* wheelEv
+ #if ENABLE(GESTURE_EVENTS)
+ bool EventHandler::handleGestureEvent(const PlatformGestureEvent& gestureEvent)
+ {
+-    // FIXME: This should hit test and go to the correct subframe rather than 
+-    // always sending gestures to the main frame only. We should also ensure
+-    // that if a frame gets a gesture begin gesture, it gets the corresponding
+-    // end gesture as well.
++    Document* doc = m_frame->document();
+ 
+     switch (gestureEvent.type()) {
+-    case PlatformGestureEvent::TapDownType:
+-        break;
++    case PlatformGestureEvent::TapDownType: {
++        // This needs to be refactored.
++        // This needs to be cleaned up.
++        if (m_gestureEventWidgetTarget.get() && m_gestureEventWidgetTarget->refCount() > 1 && passGestureEventToWidget(gestureEvent, m_gestureEventWidgetTarget.get())) {
++            m_gestureEventWidgetTarget.clear();
++            m_gestureTargetNode.clear();
++            return true;
++         } else if (m_gestureEventWidgetTarget.get() && m_gestureEventWidgetTarget->hasOneRef())
++            m_gestureEventWidgetTarget.clear();
++
++        if (m_gestureTargetNode.get() && m_gestureTargetNode->refCount() > 1) {
++            RenderLayer* layer = ((RenderBox*)m_gestureTargetNode->renderer())->layer();
++            layer->handleGestureEvent(gestureEvent);
++            m_gestureEventWidgetTarget.clear();
++            m_gestureTargetNode.clear();
++        } else if (m_gestureTargetNode.get() && m_gestureTargetNode->hasOneRef())
++            m_gestureTargetNode.clear();
++
++        FrameView* view = m_frame->view();
++        if (!view)
++            return false;
++        view->handleGestureEvent(gestureEvent);
++        return true;
++    }
+     case PlatformGestureEvent::TapType: {
+         // FIXME: Refactor this code to not hit test multiple times once hit testing has been corrected as suggested above.
+         PlatformMouseEvent fakeMouseMove(gestureEvent.position(), gestureEvent.globalPosition(), NoButton, MouseEventMoved, /* clickCount */ 1, gestureEvent.shiftKey(), gestureEvent.ctrlKey(), gestureEvent.altKey(), gestureEvent.metaKey(), gestureEvent.timestamp());
+@@ -2225,27 +2244,127 @@ bool EventHandler::handleGestureEvent(const PlatformGestureEvent& gestureEvent)
+         handleMouseReleaseEvent(fakeMouseUp);
+         return true;
+     }
+-    case PlatformGestureEvent::DoubleTapType:
+-        break;
+     case PlatformGestureEvent::ScrollUpdateType: {
+-        const float tickDivisor = (float)WheelEvent::tickMultiplier;
+-        // FIXME: Replace this interim implementation once the above fixme has been addressed.
+-        IntPoint point(gestureEvent.position().x(), gestureEvent.position().y());
+-        IntPoint globalPoint(gestureEvent.globalPosition().x(), gestureEvent.globalPosition().y());
+-        PlatformWheelEvent syntheticWheelEvent(point, globalPoint, gestureEvent.deltaX(), gestureEvent.deltaY(), gestureEvent.deltaX() / tickDivisor, gestureEvent.deltaY() / tickDivisor, ScrollByPixelWheelEvent, /* isAccepted */ false, gestureEvent.shiftKey(), gestureEvent.ctrlKey(), gestureEvent.altKey(), gestureEvent.metaKey());
+-        handleWheelEvent(syntheticWheelEvent);
++        // If there is only one reference, it's ours and someone else has deleted the target
++        // since the ScrollBeginType so skip delivering the event and free the reference.
++        if (m_gestureEventWidgetTarget.get() && m_gestureEventWidgetTarget->refCount() > 1 && passGestureEventToWidget(gestureEvent, m_gestureEventWidgetTarget.get()))
++            return true;
++        if (m_gestureEventWidgetTarget.get() && m_gestureEventWidgetTarget->hasOneRef())
++            m_gestureEventWidgetTarget.clear();
++
++        if (m_gestureTargetNode.get() && m_gestureTargetNode->refCount() > 1) {
++            RenderLayer* layer = ((RenderBox*)m_gestureTargetNode->renderer())->layer();
++            layer->handleGestureEvent(gestureEvent);
++        } else if (m_gestureTargetNode.get() && m_gestureTargetNode->hasOneRef())
++            m_gestureTargetNode.clear();
++
++        FrameView* view = m_frame->view();
++        if (!view)
++            return false;
++        setFrameWasScrolledByUser();
++        view->handleGestureEvent(gestureEvent);
+         return true;
+     }
+-    case PlatformGestureEvent::ScrollBeginType:
+-    case PlatformGestureEvent::ScrollEndType:
++    case PlatformGestureEvent::ScrollBeginType: {
++         FrameView* view = m_frame->view();
++         if (!view)
++             return false;
++  
++        LayoutPoint vPoint = view->windowToContents(gestureEvent.position());
++        Node* node;
++        bool isOverWidget;
++   
++        HitTestRequest request(HitTestRequest::ReadOnly);
++        HitTestResult result(vPoint);
++        doc->renderView()->layer()->hitTest(request, result);
++ 
++        view->handleGestureEvent(gestureEvent);
++        node = result.innerNode();
++        isOverWidget = result.isOverWidget();
++        
++        if (node) {
++            RenderObject* target = node->renderer();
++
++            if (isOverWidget && target && target->isWidget()) {
++                m_gestureEventWidgetTarget = toRenderWidget(target)->widget();
++                if (m_gestureEventWidgetTarget && passGestureEventToWidget(gestureEvent, m_gestureEventWidgetTarget.get()))
++                    return true;
++            }
++
++            node = node->shadowAncestorNode();
++            target = node->renderer();
++            
++            while (target && !target->isRoot()) {
++                if (target->isBox()) {
++                    RenderBox* rb = (RenderBox*)target;
++                    if (rb->canBeScrolledAndHasScrollableArea()) {
++                        m_gestureTargetNode = rb->node();
++                        rb->layer()->handleGestureEvent(gestureEvent);
++                        return true; // FIXME: Prove that this is correct.
++                    }
++                }
++                target = target->parent();
++            }
++        }
++         return true;
++    }
++    case PlatformGestureEvent::ScrollEndType: {
++        if (m_gestureEventWidgetTarget.get() && m_gestureEventWidgetTarget->refCount() > 1 && passGestureEventToWidget(gestureEvent, m_gestureEventWidgetTarget.get())) {
++            if (!gestureEvent.isFlick()) {
++                m_gestureEventWidgetTarget.clear();
++                m_gestureTargetNode.clear();
++            }
++            return true;
++         } else if (m_gestureEventWidgetTarget.get() && m_gestureEventWidgetTarget->hasOneRef())
++            m_gestureEventWidgetTarget.clear();
++
++        if (m_gestureTargetNode.get() && m_gestureTargetNode->refCount() > 1) {
++            RenderLayer* layer = ((RenderBox*)m_gestureTargetNode->renderer())->layer();
++            layer->handleGestureEvent(gestureEvent);
++            if (!gestureEvent.isFlick()) {
++                m_gestureEventWidgetTarget.clear();
++                m_gestureTargetNode.clear();
++            }
++        } else if (m_gestureTargetNode.get() && m_gestureTargetNode->hasOneRef())
++            m_gestureTargetNode.clear();
++
+         FrameView* view = m_frame->view();
+         if (!view)
+             return false;
+-
+         view->handleGestureEvent(gestureEvent);
+         return true;
+     }
+-    return true;
++    case PlatformGestureEvent::ZoomBeginType:
++    case PlatformGestureEvent::ZoomUpdateType:
++    case PlatformGestureEvent::ZoomEndType:
++        return false;
++    case PlatformGestureEvent::DoubleTapType:
++    {
++        printf("DOUBLE TAP FOUND IN EVENTHANDLER!!\n");
++        if (Page* page = m_frame->page()) {
++            IntRect blockBounds;
++            Node* node = page->getBlockNode(gestureEvent.globalPosition(), &blockBounds, 15);
++            printf("BLOCK BOUNDS: %d %d %d %d\n", blockBounds.x(), blockBounds.y(), blockBounds.width(), blockBounds.height());
++            if (node) {
++                float newScaleFactor = page->getScaleFactorForNode(node);
++                float deltaScaleFactor = newScaleFactor / page->pageScaleFactor();
++                printf("visibleWidth: %d visibleHeight %d\n",
++                       m_frame->view()->visibleWidth(),
++                       m_frame->view()->visibleHeight());
++                IntPoint contentLocation = m_frame->view()->windowToContents(blockBounds.location());
++                IntPoint scaledLocation(contentLocation.x() * deltaScaleFactor - (m_frame->view()->visibleWidth() - blockBounds.width() * deltaScaleFactor) / 2, 
++                                        contentLocation.y() * deltaScaleFactor - (m_frame->view()->visibleHeight() - blockBounds.height() * deltaScaleFactor) / 2);
++                // page->setPageScaleFactor(newScaleFactor, scaledLocation);
++                PlatformGestureEvent pge(PlatformGestureEvent::DoubleTapType, blockBounds.location(), gestureEvent.globalPosition(), gestureEvent.timestamp(), deltaScaleFactor, newScaleFactor, gestureEvent.shiftKey(), gestureEvent.ctrlKey(), gestureEvent.altKey(), gestureEvent.metaKey());
++                
++                m_frame->view()->handleGestureEvent(pge);
++            }
++        }
++
++        return true;
++    }
++    }
++  return false;
+ }
+ #endif
+ 
+diff --git third_party/WebKit/Source/WebCore/page/EventHandler.h third_party/WebKit/Source/WebCore/page/EventHandler.h
+index cf2fe81..1ff7c7b 100644
+--- third_party/WebKit/Source/WebCore/page/EventHandler.h
++++ third_party/WebKit/Source/WebCore/page/EventHandler.h
+@@ -300,6 +300,9 @@ private:
+ 
+     bool passMouseDownEventToWidget(Widget*);
+     bool passWheelEventToWidget(PlatformWheelEvent&, Widget*);
++#if ENABLE(GESTURE_EVENTS)
++    bool passGestureEventToWidget(const PlatformGestureEvent&, Widget*);
++#endif
+ 
+     void defaultSpaceEventHandler(KeyboardEvent*);
+     void defaultBackspaceEventHandler(KeyboardEvent*);
+@@ -421,6 +424,11 @@ private:
+     TouchTargetMap m_originatingTouchPointTargets;
+     bool m_touchPressed;
+ #endif
++#if ENABLE(GESTURE_EVENTS)
++    RefPtr<Widget> m_gestureEventWidgetTarget;
++    RefPtr<Node> m_gestureTargetNode;
++#endif
++
+ };
+ 
+ } // namespace WebCore
+diff --git third_party/WebKit/Source/WebCore/page/FrameView.cpp third_party/WebKit/Source/WebCore/page/FrameView.cpp
+index 46ff1001a..2c90d8c 100644
+--- third_party/WebKit/Source/WebCore/page/FrameView.cpp
++++ third_party/WebKit/Source/WebCore/page/FrameView.cpp
+@@ -1217,6 +1217,24 @@ void FrameView::setMediaType(const String& mediaType)
+     m_mediaType = mediaType;
+ }
+ 
++void FrameView::zoomAnimatorScaleChanged(double scale, double x, double y, bool isFinished)
++{
++    if (isFinished) {
++        // FIXME: clean up something here
++        m_page->setPageScaleFactor(m_page->pageScaleFactor() * scale,
++                                   LayoutPoint(scale * scrollX() - x, scale * scrollY() - y));
++        scale = 1;
++        x = 0;
++        y = 0;
++    }
++    // TODO(wjmaclean) The scale is currently communicated through page settings
++    // to maintain consistency with the back-end layout test mechanism. This
++    // should probably be simplified.
++    m_page->settings()->setZoomAnimatorScale(scale);
++    m_page->settings()->setZoomAnimatorPosition(x, y);
++    m_frame->contentRenderer()->compositor()->scheduleLayerFlush();
++}
++
+ String FrameView::mediaType() const
+ {
+     // See if we have an override type.
+diff --git third_party/WebKit/Source/WebCore/page/FrameView.h third_party/WebKit/Source/WebCore/page/FrameView.h
+index 442e08c..938daf2 100644
+--- third_party/WebKit/Source/WebCore/page/FrameView.h
++++ third_party/WebKit/Source/WebCore/page/FrameView.h
+@@ -170,6 +170,8 @@ public:
+     virtual void repaintFixedElementsAfterScrolling();
+     virtual bool shouldRubberBandInDirection(ScrollDirection) const;
+ 
++    virtual void zoomAnimatorScaleChanged(double, double, double, bool);
++
+     String mediaType() const;
+     void setMediaType(const String&);
+     void adjustMediaTypeForPrinting(bool printing);
+diff --git third_party/WebKit/Source/WebCore/page/Page.cpp third_party/WebKit/Source/WebCore/page/Page.cpp
+index b5a28a0..9a27d6e 100644
+--- third_party/WebKit/Source/WebCore/page/Page.cpp
++++ third_party/WebKit/Source/WebCore/page/Page.cpp
+@@ -174,6 +174,7 @@ Page::Page(PageClients& pageClients)
+ #if ENABLE(PAGE_VISIBILITY_API)
+     , m_visibilityState(PageVisibilityStateVisible)
+ #endif
++    , m_lastNode(0)
+ {
+     if (!allPages) {
+         allPages = new HashSet<Page*>;
+@@ -263,6 +264,44 @@ void Page::setMainFrame(PassRefPtr<Frame> mainFrame)
+     m_mainFrame = mainFrame;
+ }
+ 
++Node* Page::getBlockNode(const IntPoint& inputPoint, IntRect* blockBounds, int padding)
++{
++    // Use the rect-based hit test to find the node.
++    IntPoint point = mainFrame()->view()->windowToContents(inputPoint);
++    printf("point %d %d inputPoint %d %d\n",
++            point.x(), point.y(), inputPoint.x(), inputPoint.y());
++    HitTestResult result = mainFrame()->eventHandler()->hitTestResultAtPoint(point, false, false,
++            DontHitTestScrollbars, HitTestRequest::Active | HitTestRequest::ReadOnly,
++            IntSize(padding, padding));
++    Node* node = result.innerNonSharedNode();
++    if (!node)
++        return 0;
++    // Find the block type node based on the hit node.
++    while (node && (!node->renderer() || node->renderer()->isInline()))
++        node = node->parentNode();
++    // Return the bounding box in the window coordinate system.
++    if (node) {
++        IntRect rect = node->getRect();
++        Frame* frame = node->document()->frame();
++        *blockBounds = frame->view()->contentsToWindow(rect);
++    }
++    return node;
++}
++
++float Page::getScaleFactorForNode(Node* node)
++{
++    IntRect rect = node->getRect();
++    Frame* frame = node->document()->frame();
++    rect = frame->view()->contentsToWindow(rect);
++
++    float scale = pageScaleFactor();
++    if (scale > 1.0f) {
++      return 1.0f;
++    }
++    float scaleFactor = (float) mainFrame()->view()->size().width() / (rect.width() + 10);
++    return std::min(scaleFactor, 3.0f);
++}
++
+ bool Page::openedByDOM() const
+ {
+     return m_openedByDOM;
+diff --git third_party/WebKit/Source/WebCore/page/Page.h third_party/WebKit/Source/WebCore/page/Page.h
+index 1390c98..9db7dca 100644
+--- third_party/WebKit/Source/WebCore/page/Page.h
++++ third_party/WebKit/Source/WebCore/page/Page.h
+@@ -69,6 +69,8 @@ namespace WebCore {
+     class HistoryItem;
+     class InspectorClient;
+     class InspectorController;
++    class IntPoint;
++    class IntRect;
+     class MediaCanStartListener;
+     class MediaStreamClient;
+     class MediaStreamController;
+@@ -143,6 +145,9 @@ namespace WebCore {
+         void setMainFrame(PassRefPtr<Frame>);
+         Frame* mainFrame() const { return m_mainFrame.get(); }
+ 
++        Node* getBlockNode(const IntPoint& inputPoint, IntRect* blockBounds, int padding);
++        float getScaleFactorForNode(Node* node);
++
+         bool openedByDOM() const;
+         void setOpenedByDOM();
+ 
+@@ -416,6 +421,7 @@ namespace WebCore {
+ #if ENABLE(PAGE_VISIBILITY_API)
+         PageVisibilityState m_visibilityState;
+ #endif
++        Node* m_lastNode;
+     };
+ 
+ } // namespace WebCore
+diff --git third_party/WebKit/Source/WebCore/page/brew/EventHandlerBrew.cpp third_party/WebKit/Source/WebCore/page/brew/EventHandlerBrew.cpp
+new file mode 100644
+index 0000000..c8c3276
+--- /dev/null
++++ third_party/WebKit/Source/WebCore/page/brew/EventHandlerBrew.cpp
+@@ -0,0 +1,135 @@
++/*
++ * Copyright (C) 2010 Company 100, Inc.
++ * Copyright 2009, The Android Open Source Project
++ * Copyright (C) 2006 Zack Rusin <zack@kde.org>
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE COMPUTER, INC. ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL APPLE COMPUTER, INC. OR
++ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
++ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
++ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
++ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
++ * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
++ */
++
++#include "config.h"
++#include "EventHandler.h"
++
++#include "ClipboardBrew.h"
++#include "EventNames.h"
++#include "FocusController.h"
++#include "Frame.h"
++#include "FrameView.h"
++#include "HitTestResult.h"
++#include "KeyboardEvent.h"
++#include "MouseEventWithHitTestResults.h"
++#include "NotImplemented.h"
++#include "Page.h"
++#include "PlatformKeyboardEvent.h"
++#include "PlatformWheelEvent.h"
++#include "RenderWidget.h"
++
++namespace WebCore {
++
++bool EventHandler::tabsToAllFormControls(KeyboardEvent* event) const
++{
++    return true;
++}
++
++void EventHandler::focusDocumentView()
++{
++    Page* page = m_frame->page();
++    if (page)
++        page->focusController()->setFocusedFrame(m_frame);
++}
++
++bool EventHandler::passWidgetMouseDownEventToWidget(const MouseEventWithHitTestResults& event)
++{
++    // Figure out which view to send the event to.
++    RenderObject* target = targetNode(event) ? targetNode(event)->renderer() : 0;
++    if (!target || !target->isWidget())
++        return false;
++    return passMouseDownEventToWidget(toRenderWidget(target)->widget());
++}
++
++bool EventHandler::passWidgetMouseDownEventToWidget(RenderWidget* renderWidget)
++{
++    return passMouseDownEventToWidget(renderWidget->widget());
++}
++
++// This function is used to route the mouse down event to the native widgets, it seems like a
++// work around for the Mac platform which does not support double clicks, but browsers do.
++bool EventHandler::passMouseDownEventToWidget(Widget* widget)
++{
++    notImplemented();
++    return false;
++}
++
++bool EventHandler::eventActivatedView(const PlatformMouseEvent&) const
++{
++    notImplemented();
++    return false;
++}
++
++// This function is called for mouse events by FrameView::handleMousePressEvent().
++// It is used to ensure that events are sync'ed correctly between frames. For example
++// if the user presses down in one frame and up in another frame, this function will
++// returns true, and pass the event to the correct frame.
++bool EventHandler::passSubframeEventToSubframe(MouseEventWithHitTestResults& event, Frame* subframe, HitTestResult*)
++{
++    notImplemented();
++    return false;
++}
++
++// This is called to route wheel events to child widgets when they are RenderWidget
++// as the parent usually gets wheel event. Don't have a mouse with a wheel to confirm
++// the operation of this function.
++bool EventHandler::passWheelEventToWidget(PlatformWheelEvent& event, Widget* widget)
++{
++    notImplemented();
++    return false;
++}
++
++#if ENABLE(GESTURE_EVENTS)
++bool EventHandler::passGestureEventToWidget(PlatformGestureEvent&, Widget*)
++{
++    notImplemented();
++    return false;
++}
++#endif
++
++bool EventHandler::passMousePressEventToSubframe(MouseEventWithHitTestResults& mev, Frame* subframe)
++{
++    return passSubframeEventToSubframe(mev, subframe);
++}
++
++bool EventHandler::passMouseMoveEventToSubframe(MouseEventWithHitTestResults& mev, Frame* subframe, HitTestResult* hoveredNode)
++{
++    return passSubframeEventToSubframe(mev, subframe, hoveredNode);
++}
++
++bool EventHandler::passMouseReleaseEventToSubframe(MouseEventWithHitTestResults& mev, Frame* subframe)
++{
++    return passSubframeEventToSubframe(mev, subframe);
++}
++
++unsigned EventHandler::accessKeyModifiers()
++{
++    return PlatformKeyboardEvent::AltKey;
++}
++
++} // namespace WebCore
++
+diff --git third_party/WebKit/Source/WebCore/page/chromium/EventHandlerChromium.cpp third_party/WebKit/Source/WebCore/page/chromium/EventHandlerChromium.cpp
+index 40a71ab..351a7f5 100644
+--- third_party/WebKit/Source/WebCore/page/chromium/EventHandlerChromium.cpp
++++ third_party/WebKit/Source/WebCore/page/chromium/EventHandlerChromium.cpp
+@@ -44,6 +44,11 @@
+ #include "PlatformWheelEvent.h"
+ #include "RenderWidget.h"
+ 
++#if ENABLE(GESTURE_EVENTS) || ENABLE(GESTURE_RECOGNIZER)
++#include "PlatformGestureEvent.h"
++#endif
++
++
+ namespace WebCore {
+ 
+ #if OS(DARWIN)
+@@ -164,4 +169,21 @@ bool EventHandler::shouldTurnVerticalTicksIntoHorizontal(const HitTestResult& re
+ }
+ #endif
+ 
++#if ENABLE(GESTURE_EVENTS)
++bool EventHandler::passGestureEventToWidget(const PlatformGestureEvent& gestureEvent, Widget* widget)
++{
++    // We can sometimes get a null widget! EventHandlerMac handles a null
++    // widget by returning false, so we do the same.
++    if (!widget)
++        return false;
++
++    // If not a FrameView, then probably a plugin widget. Those will receive
++    // the event via an EventTargetNode dispatch when this returns false.
++    if (!widget->isFrameView())
++        return false;
++
++    return static_cast<FrameView*>(widget)->frame()->eventHandler()->handleGestureEvent(gestureEvent);
++}
++#endif
++
+ } // namespace WebCore
+diff --git third_party/WebKit/Source/WebCore/page/efl/EventHandlerEfl.cpp third_party/WebKit/Source/WebCore/page/efl/EventHandlerEfl.cpp
+index 3a3c4dd..2b9dacc 100644
+--- third_party/WebKit/Source/WebCore/page/efl/EventHandlerEfl.cpp
++++ third_party/WebKit/Source/WebCore/page/efl/EventHandlerEfl.cpp
+@@ -95,6 +95,14 @@ bool EventHandler::passWheelEventToWidget(PlatformWheelEvent& event, Widget* wid
+     return static_cast<FrameView*>(widget)->frame()->eventHandler()->handleWheelEvent(event);
+ }
+ 
++#if ENABLE(GESTURE_EVENTS)
++bool EventHandler::passGestureEventToWidget(const PlatformGestureEvent&, Widget*)
++{
++    notImplemented();
++    return false;
++}
++#endif
++
+ PassRefPtr<Clipboard> EventHandler::createDraggingClipboard() const
+ {
+     return ClipboardEfl::create(ClipboardWritable, Clipboard::DragAndDrop);
+diff --git third_party/WebKit/Source/WebCore/page/gtk/EventHandlerGtk.cpp third_party/WebKit/Source/WebCore/page/gtk/EventHandlerGtk.cpp
+index ab54d83..5e43abd 100644
+--- third_party/WebKit/Source/WebCore/page/gtk/EventHandlerGtk.cpp
++++ third_party/WebKit/Source/WebCore/page/gtk/EventHandlerGtk.cpp
+@@ -94,6 +94,14 @@ bool EventHandler::passWheelEventToWidget(PlatformWheelEvent& event, Widget* wid
+     return static_cast<FrameView*>(widget)->frame()->eventHandler()->handleWheelEvent(event);
+ }
+ 
++#if ENABLE(GESTURE_EVENTS)
++bool EventHandler::passGestureEventToWidget(PlatformGestureEvent&, Widget*)
++{
++    notImplemented();
++    return false;
++}
++#endif
++
+ PassRefPtr<Clipboard> EventHandler::createDraggingClipboard() const
+ {
+     return ClipboardGtk::create(ClipboardWritable, DataObjectGtk::create(), Clipboard::DragAndDrop, m_frame);
+diff --git third_party/WebKit/Source/WebCore/page/haiku/EventHandlerHaiku.cpp third_party/WebKit/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
+new file mode 100644
+index 0000000..ca9706f
+--- /dev/null
++++ third_party/WebKit/Source/WebCore/page/haiku/EventHandlerHaiku.cpp
+@@ -0,0 +1,149 @@
++/*
++ * Copyright (C) 2006 Zack Rusin <zack@kde.org>
++ * Copyright (C) 2007 Ryan Leavengood <leavengood@gmail.com>
++ * Copyright (C) 2009 Maxime Simon <simon.maxime@gmail.com>
++ * Copyright (C) 2010 Stephan Aßmus <superstippi@gmx.de>
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY APPLE COMPUTER, INC. ``AS IS'' AND ANY
++ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL APPLE COMPUTER, INC. OR
++ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
++ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
++ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
++ * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
++ * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
++ */
++
++#include "config.h"
++#include "EventHandler.h"
++
++#include "ClipboardHaiku.h"
++#include "EventNames.h"
++#include "FocusController.h"
++#include "Frame.h"
++#include "FrameView.h"
++#include "HitTestResult.h"
++#include "KeyboardEvent.h"
++#include "MouseEventWithHitTestResults.h"
++#include "NotImplemented.h"
++#include "Page.h"
++#include "PlatformKeyboardEvent.h"
++#include "PlatformWheelEvent.h"
++#include "RenderWidget.h"
++
++#include <interface/View.h>
++
++
++namespace WebCore {
++
++const double EventHandler::TextDragDelay = 0.0;
++
++bool EventHandler::tabsToAllFormControls(KeyboardEvent* event) const
++{
++    bool handlingOptionTab = isKeyboardOptionTab(event);
++
++    return handlingOptionTab;
++}
++
++void EventHandler::focusDocumentView()
++{
++    BView* view = m_frame->view()->platformWidget();
++    if (view && view->LockLooperWithTimeout(5000) == B_OK) {
++        view->MakeFocus(true);
++        view->UnlockLooper();
++    }
++
++    Page* page = m_frame->page();
++    if (page)
++        page->focusController()->setFocusedFrame(m_frame);
++}
++
++bool EventHandler::passWidgetMouseDownEventToWidget(const MouseEventWithHitTestResults& event)
++{
++    // Figure out which view to send the event to.
++    RenderObject* target = targetNode(event) ? targetNode(event)->renderer() : 0;
++    if (!target || !target->isWidget())
++        return false;
++    return passMouseDownEventToWidget(toRenderWidget(target)->widget());
++}
++
++bool EventHandler::passWidgetMouseDownEventToWidget(RenderWidget* renderWidget)
++{
++    return passMouseDownEventToWidget(renderWidget->widget());
++}
++
++bool EventHandler::passMouseDownEventToWidget(Widget* widget)
++{
++    notImplemented();
++    return false;
++}
++
++bool EventHandler::eventActivatedView(const PlatformMouseEvent& event) const
++{
++    // On Haiku, clicks which activate the window in non focus-follows-mouse mode
++    // are not passed to the window, so any event we generate is not the activation
++    // event.
++    return false;
++}
++
++bool EventHandler::passWheelEventToWidget(PlatformWheelEvent& event, Widget* widget)
++{
++    if (!widget->isFrameView())
++        return false;
++
++    return static_cast<FrameView*>(widget)->frame()->eventHandler()->handleWheelEvent(event);
++}
++
++PassRefPtr<Clipboard> EventHandler::createDraggingClipboard() const
++{
++    return ClipboardHaiku::create(ClipboardWritable, Clipboard::DragAndDrop);
++}
++
++bool EventHandler::passMousePressEventToSubframe(MouseEventWithHitTestResults& mev, Frame* subframe)
++{
++    subframe->eventHandler()->handleMousePressEvent(mev.event());
++    return true;
++}
++
++bool EventHandler::passMouseMoveEventToSubframe(MouseEventWithHitTestResults& mev, Frame* subframe, HitTestResult* hoveredNode)
++{
++    subframe->eventHandler()->handleMouseMoveEvent(mev.event(), hoveredNode);
++    return true;
++}
++
++bool EventHandler::passMouseReleaseEventToSubframe(MouseEventWithHitTestResults& mev, Frame* subframe)
++{
++    subframe->eventHandler()->handleMouseReleaseEvent(mev.event());
++    return true;
++}
++
++unsigned EventHandler::accessKeyModifiers()
++{
++    // NOTE: On Haiku, the user can choose Alt or Ctrl as access key, but
++    // the PlatformKeyboardEvent already takes care of this, internally,
++    // we always use Alt.
++    return PlatformKeyboardEvent::AltKey;
++}
++
++#if ENABLE(GESTURE_EVENTS)
++bool EventHandler::passGestureEventToWidget(PlatformGestureEvent&, Widget*)
++{
++    notImplemented();
++    return false;
++}
++#endif
++
++} // namespace WebCore
++
+diff --git third_party/WebKit/Source/WebCore/page/mac/EventHandlerMac.mm third_party/WebKit/Source/WebCore/page/mac/EventHandlerMac.mm
+index 8dba56f..6e4ec73 100644
+--- third_party/WebKit/Source/WebCore/page/mac/EventHandlerMac.mm
++++ third_party/WebKit/Source/WebCore/page/mac/EventHandlerMac.mm
+@@ -726,4 +726,25 @@ unsigned EventHandler::accessKeyModifiers()
+     return PlatformKeyboardEvent::CtrlKey | PlatformKeyboardEvent::AltKey;
+ }
+ 
++#if ENABLE(GESTURE_EVENTS)
++bool EventHandler::passWheelEventToWidget(const PlatformGestureEvent& gestureEvent, Widget* widget)
++{
++    BEGIN_BLOCK_OBJC_EXCEPTIONS;
++
++    if (!widget)
++        return false;
++
++    NSView* nodeView = widget->platformWidget();
++    if (!nodeView) {
++        // WebKit2 code path.
++        if (!widget->isFrameView())
++            return false;
++
++        return static_cast<FrameView*>(widget)->frame()->eventHandler()->handleWheelEvent(gestureEvent);
++    }
++    END_BLOCK_OBJC_EXCEPTIONS;
++    return false;
++}
++#endif
++
+ }
+diff --git third_party/WebKit/Source/WebCore/page/qt/EventHandlerQt.cpp third_party/WebKit/Source/WebCore/page/qt/EventHandlerQt.cpp
+index 2b8804d4..9e8645c 100644
+--- third_party/WebKit/Source/WebCore/page/qt/EventHandlerQt.cpp
++++ third_party/WebKit/Source/WebCore/page/qt/EventHandlerQt.cpp
+@@ -98,6 +98,17 @@ bool EventHandler::passWheelEventToWidget(PlatformWheelEvent& event, Widget* wid
+     return static_cast<FrameView*>(widget)->frame()->eventHandler()->handleWheelEvent(event);
+ }
+ 
++#if ENABLE(GESTURE_EVENTS)
++bool EventHandler::passGestureEventToWidget(PlatformGestureEvent& event, Widget* widget)
++{
++    Q_ASSERT(widget);
++    if (!widget->isFrameView())
++        return false;
++
++    return static_cast<FrameView*>(widget)->frame()->eventHandler()->handleGestureEvent(event);
++}
++#endif
++
+ PassRefPtr<Clipboard> EventHandler::createDraggingClipboard() const
+ {
+     return ClipboardQt::create(ClipboardWritable, m_frame, Clipboard::DragAndDrop);
+diff --git third_party/WebKit/Source/WebCore/page/win/EventHandlerWin.cpp third_party/WebKit/Source/WebCore/page/win/EventHandlerWin.cpp
+index 721e350..d7a14be 100644
+--- third_party/WebKit/Source/WebCore/page/win/EventHandlerWin.cpp
++++ third_party/WebKit/Source/WebCore/page/win/EventHandlerWin.cpp
+@@ -81,6 +81,14 @@ bool EventHandler::passWheelEventToWidget(PlatformWheelEvent& wheelEvent, Widget
+     return static_cast<FrameView*>(widget)->frame()->eventHandler()->handleWheelEvent(wheelEvent);
+ }
+ 
++#if ENABLE(GESTURE_EVENTS)
++bool EventHandler::passGestureEventToWidget(const PlatformGestureEvent&, Widget*)
++{
++    notImplemented();
++    return false;
++}
++#endif
++
+ bool EventHandler::tabsToAllFormControls(KeyboardEvent*) const
+ {
+     return true;
+diff --git third_party/WebKit/Source/WebCore/page/wx/EventHandlerWx.cpp third_party/WebKit/Source/WebCore/page/wx/EventHandlerWx.cpp
+index ba2f9cd..5fbfbcd 100644
+--- third_party/WebKit/Source/WebCore/page/wx/EventHandlerWx.cpp
++++ third_party/WebKit/Source/WebCore/page/wx/EventHandlerWx.cpp
+@@ -82,6 +82,14 @@ bool EventHandler::passWheelEventToWidget(PlatformWheelEvent& event, Widget* wid
+     return static_cast<FrameView*>(widget)->frame()->eventHandler()->handleWheelEvent(event);
+ }
+ 
++#if ENABLE(GESTURE_EVENTS)
++bool EventHandler::passGestureEventToWidget(PlatformGestureEvent&, Widget*)
++{
++    notImplemented(); 
++    return false; 
++}
++#endif
++
+ bool EventHandler::tabsToAllFormControls(KeyboardEvent* event) const 
+ { 
+     notImplemented(); 
+diff --git third_party/WebKit/Source/WebCore/platform/PlatformGestureEvent.h third_party/WebKit/Source/WebCore/platform/PlatformGestureEvent.h
+index 833c6a3..70dac4e 100644
+--- third_party/WebKit/Source/WebCore/platform/PlatformGestureEvent.h
++++ third_party/WebKit/Source/WebCore/platform/PlatformGestureEvent.h
+@@ -41,6 +41,9 @@ public:
+         TapType,
+         TapDownType,
+         DoubleTapType,
++        ZoomBeginType,
++        ZoomUpdateType,
++        ZoomEndType,
+     };
+ 
+     PlatformGestureEvent()
+@@ -48,6 +51,21 @@ public:
+         , m_timestamp(0)
+     {
+     }
++    
++    PlatformGestureEvent(Type type, const IntPoint& position, const IntPoint& globalPosition, const double timestamp, const float deltaX, const float deltaY, bool shiftKey, bool ctrlKey, bool altKey, bool metaKey, bool flick)
++        : m_type(type)
++        , m_position(position)
++        , m_globalPosition(globalPosition)
++        , m_timestamp(timestamp)
++        , m_deltaX(deltaX)
++        , m_deltaY(deltaY)
++        , m_shiftKey(shiftKey)
++        , m_ctrlKey(ctrlKey)
++        , m_altKey(altKey)
++        , m_metaKey(metaKey)
++        , m_flick(flick)
++    {
++    }
+ 
+     PlatformGestureEvent(Type type, const IntPoint& position, const IntPoint& globalPosition, const double timestamp, const float deltaX, const float deltaY, bool shiftKey, bool ctrlKey, bool altKey, bool metaKey)
+         : m_type(type)
+@@ -60,6 +78,7 @@ public:
+         , m_ctrlKey(ctrlKey)
+         , m_altKey(altKey)
+         , m_metaKey(metaKey)
++        , m_flick(false)
+     {
+     }
+ 
+@@ -77,6 +96,8 @@ public:
+     bool altKey() const { return m_altKey; }
+     bool metaKey() const { return m_metaKey; }
+ 
++    bool isFlick() const { return m_flick; }
++
+ protected:
+     Type m_type;
+     IntPoint m_position;
+@@ -88,6 +109,7 @@ protected:
+     bool m_ctrlKey;
+     bool m_altKey;
+     bool m_metaKey;
++    bool m_flick;
+ };
+ 
+ } // namespace WebCore
+diff --git third_party/WebKit/Source/WebCore/platform/ScrollAnimator.cpp third_party/WebKit/Source/WebCore/platform/ScrollAnimator.cpp
+index 5538efd..fb02513 100644
+--- third_party/WebKit/Source/WebCore/platform/ScrollAnimator.cpp
++++ third_party/WebKit/Source/WebCore/platform/ScrollAnimator.cpp
+@@ -37,6 +37,8 @@
+ #include <algorithm>
+ #include <wtf/PassOwnPtr.h>
+ 
++#include <stdio.h>
++
+ using namespace std;
+ 
+ namespace WebCore {
+@@ -52,6 +54,10 @@ ScrollAnimator::ScrollAnimator(ScrollableArea* scrollableArea)
+     : m_scrollableArea(scrollableArea)
+     , m_currentPosX(0)
+     , m_currentPosY(0)
++    , m_currentZoom(1)
++    , m_currentZoomPosX(0)
++    , m_currentZoomPosY(0)
++    , m_flicker(adoptPtr(new FlickAnimator(scrollableArea)))
+ {
+ }
+ 
+@@ -114,7 +120,7 @@ void ScrollAnimator::handleWheelEvent(PlatformWheelEvent& e)
+ }
+ 
+ #if ENABLE(GESTURE_EVENTS)
+-void ScrollAnimator::handleGestureEvent(const PlatformGestureEvent&)
++void ScrollAnimator::handleGestureEvent(const PlatformGestureEvent& event)
+ {
+ }
+ #endif
+@@ -129,4 +135,9 @@ void ScrollAnimator::notifyPositionChanged()
+     m_scrollableArea->setScrollOffsetFromAnimation(IntPoint(m_currentPosX, m_currentPosY));
+ }
+ 
++void ScrollAnimator::notifyZoomChanged(bool isFinished)
++{
++    m_scrollableArea->zoomAnimatorScaleChanged(m_currentZoom, m_currentZoomPosX, m_currentZoomPosY, isFinished);
++}
++
+ } // namespace WebCore
+diff --git third_party/WebKit/Source/WebCore/platform/ScrollAnimator.h third_party/WebKit/Source/WebCore/platform/ScrollAnimator.h
+index 667381b..a56c997 100644
+--- third_party/WebKit/Source/WebCore/platform/ScrollAnimator.h
++++ third_party/WebKit/Source/WebCore/platform/ScrollAnimator.h
+@@ -31,8 +31,10 @@
+ #ifndef ScrollAnimator_h
+ #define ScrollAnimator_h
+ 
++#include "FlickAnimator.h"
+ #include "ScrollTypes.h"
+ #include <wtf/Forward.h>
++#include <wtf/OwnPtr.h>
+ 
+ namespace WebCore {
+ 
+@@ -91,10 +93,16 @@ protected:
+     ScrollAnimator(ScrollableArea*);
+ 
+     virtual void notifyPositionChanged();
++    virtual void notifyZoomChanged(bool);
+ 
+     ScrollableArea* m_scrollableArea;
+     float m_currentPosX; // We avoid using a FloatPoint in order to reduce
+     float m_currentPosY; // subclass code complexity.
++    float m_currentZoom;
++    float m_currentZoomPosX;
++    float m_currentZoomPosY;
++
++    OwnPtr<FlickAnimator> m_flicker;
+ };
+ 
+ } // namespace WebCore
+diff --git third_party/WebKit/Source/WebCore/platform/ScrollAnimatorNone.cpp third_party/WebKit/Source/WebCore/platform/ScrollAnimatorNone.cpp
+index 9a39dd2..60bbb14 100644
+--- third_party/WebKit/Source/WebCore/platform/ScrollAnimatorNone.cpp
++++ third_party/WebKit/Source/WebCore/platform/ScrollAnimatorNone.cpp
+@@ -37,6 +37,7 @@
+ #include "FloatPoint.h"
+ #include "NotImplemented.h"
+ #include "OwnArrayPtr.h"
++#include "PlatformGestureEvent.h"
+ #include "ScrollableArea.h"
+ #include "ScrollbarTheme.h"
+ #include "TraceEvent.h"
+@@ -44,6 +45,12 @@
+ #include <wtf/CurrentTime.h>
+ #include <wtf/PassOwnPtr.h>
+ 
++#if ENABLE(GESTURE_EVENTS)
++#include "PlatformGestureEvent.h"
++#endif
++
++
++
+ using namespace std;
+ 
+ namespace WebCore {
+@@ -326,6 +333,21 @@ bool ScrollAnimatorNone::PerAxisData::updateDataFromParameters(float step, float
+     return true;
+ }
+ 
++bool ScrollAnimatorNone::PerAxisData::animateZoom(double currentTime)
++{
++    m_lastAnimationTime = currentTime;
++    double deltaTime = currentTime - m_startTime;
++    double newPosition = *m_currentPosition;
++
++    if (deltaTime > m_animationTime) {
++        *m_currentPosition = m_desiredPosition;
++        return false;
++    }
++    newPosition = deltaTime / m_animationTime * (m_desiredPosition - m_startPosition) + m_startPosition;
++    *m_currentPosition = newPosition;
++    return true;
++}
++
+ // FIXME: Add in jank detection trace events into this function.
+ bool ScrollAnimatorNone::PerAxisData::animateScroll(double currentTime)
+ {
+@@ -370,6 +392,9 @@ ScrollAnimatorNone::ScrollAnimatorNone(ScrollableArea* scrollableArea)
+     : ScrollAnimator(scrollableArea)
+     , m_horizontalData(this, &m_currentPosX, scrollableArea->visibleWidth())
+     , m_verticalData(this, &m_currentPosY, scrollableArea->visibleHeight())
++    , m_zoomData(this, &m_currentZoom, 1)
++    , m_zoomDataPosX(this, &m_currentZoomPosX, 1)
++    , m_zoomDataPosY(this, &m_currentZoomPosY, 1)
+     , m_animationTimer(this, &ScrollAnimatorNone::animationTimerFired)
+ {
+ }
+@@ -466,6 +491,15 @@ void ScrollAnimatorNone::animationTimerFired(Timer<ScrollAnimatorNone>* timer)
+         continueAnimation = true;
+     if (m_verticalData.m_startTime && m_verticalData.animateScroll(currentTime + deltaToNextFrame))
+         continueAnimation = true;
++    bool zac1 = m_zoomData.animateZoom(currentTime + deltaToNextFrame);
++    bool zac2 = m_zoomDataPosX.animateZoom(currentTime + deltaToNextFrame);
++    bool zac3 = m_zoomDataPosY.animateZoom(currentTime + deltaToNextFrame);
++    if (m_zoomData.m_startTime && (zac1 || zac2 || zac3)) {
++        continueAnimation = true;
++        notifyZoomChanged(!continueAnimation);
++    } else
++        notifyZoomChanged(true);
++
+     if (continueAnimation) {
+         double nextTimerInterval = max(kMinimumTimerInterval, deltaToNextFrame);
+         timer->startOneShot(nextTimerInterval);
+@@ -479,6 +513,104 @@ void ScrollAnimatorNone::stopAnimationTimerIfNeeded()
+         m_animationTimer.stop();
+ }
+ 
++#if ENABLE(GESTURE_EVENTS)
++void ScrollAnimatorNone::zoom(const PlatformGestureEvent& pge)
++{
++    ASSERT(pge.type() == PlatformGestureEvent::DoubleTapType);
++    // TODO(wjmaclean) modify this so we can start even if the timer is active.
++    if (!m_animationTimer.isActive()) {
++        m_currentZoom = 1;
++        m_currentZoomPosX = 0;
++        m_currentZoomPosY = 0;
++        double currentTime = WTF::monotonicallyIncreasingTime();
++
++        m_zoomData.m_startTime = currentTime - kTickTime / 2;
++        m_zoomData.m_startPosition = m_currentZoom;
++        m_zoomData.m_desiredPosition = pge.deltaX();
++        m_zoomData.m_lastAnimationTime = currentTime;
++        m_zoomData.m_animationTime = 100 * kTickTime;
++        m_zoomData.m_attackTime = m_zoomData.m_animationTime / 10.0;
++        m_zoomData.m_attackCurve = Quadratic;
++        m_zoomData.m_releaseTime = m_zoomData.m_animationTime / 10.0;
++        m_zoomData.m_releaseCurve = Quadratic;
++
++        // TODO(wjmaclean) Find less hacky way to animate pos data.
++        float scale = pge.deltaX();
++        m_zoomDataPosX.m_startTime = m_zoomData.m_startTime;
++        m_zoomDataPosX.m_lastAnimationTime = currentTime;
++        m_zoomDataPosX.m_animationTime = m_zoomData.m_animationTime;
++        m_zoomDataPosX.m_attackTime = m_zoomData.m_attackTime;
++        m_zoomDataPosX.m_attackCurve = Quadratic;
++        m_zoomDataPosX.m_releaseTime = m_zoomData.m_releaseTime;
++        m_zoomDataPosX.m_releaseCurve = Quadratic;
++        m_zoomDataPosX.m_startPosition = 0;
++        m_zoomDataPosX.m_desiredPosition = (1 - scale) * pge.globalPosition().x();
++
++        m_zoomDataPosY.m_startTime = m_zoomData.m_startTime;
++        m_zoomDataPosY.m_lastAnimationTime = currentTime;
++        m_zoomDataPosY.m_animationTime = m_zoomData.m_animationTime;
++        m_zoomDataPosY.m_attackTime = m_zoomData.m_attackTime;
++        m_zoomDataPosY.m_attackCurve = Quadratic;
++        m_zoomDataPosY.m_releaseTime = m_zoomData.m_releaseTime;
++        m_zoomDataPosY.m_releaseCurve = Quadratic;
++        m_zoomDataPosY.m_startPosition = 0;
++        m_zoomDataPosY.m_desiredPosition = (1 - scale) * pge.globalPosition().y();
++
++        bool isContinuing = m_zoomData.animateZoom(currentTime);
++        isContinuing = m_zoomDataPosX.animateZoom(currentTime) || isContinuing;
++        isContinuing = m_zoomDataPosY.animateZoom(currentTime) || isContinuing;
++
++        double deltaToNextFrame = ceil((currentTime - m_startTime) * kFrameRate) / kFrameRate - (currentTime - m_startTime);
++        double nextTimerInterval = max(kMinimumTimerInterval, deltaToNextFrame);
++        if (isContinuing)
++            m_animationTimer.startOneShot(nextTimerInterval);
++        notifyZoomChanged(!isContinuing);
++    }
++}
++
++void ScrollAnimatorNone::handleGestureEvent(const PlatformGestureEvent& event)
++{
++    // FIXME: finish handler here.
++    // functionality should go here.
++    switch(event.type()) {
++    case PlatformGestureEvent::ScrollBeginType:
++        fprintf(stderr, "ScrollAnimatorNone::handleGestureEvent ScrollBeginType \n");
++        break;
++    case PlatformGestureEvent::ScrollEndType:
++        fprintf(stderr, "ScrollAnimatorNone::handleGestureEvent ScrollEndType \n");
++        // Might want to prune the event here.
++        fprintf(stderr,"wjm: ScrollEnd - (%d,%d)\n", m_scrollableArea->scrollOrigin().x(), m_scrollableArea->scrollOrigin().y());
++        if (event.isFlick()) {
++            m_flicker->startFlick(event);
++        }
++        break;
++    case PlatformGestureEvent::ScrollUpdateType: {
++        IntSize maxForwardScrollDelta = m_scrollableArea->maximumScrollPosition() - m_scrollableArea->scrollPosition();
++        IntSize maxBackwardScrollDelta = m_scrollableArea->scrollPosition() - m_scrollableArea->minimumScrollPosition();
++        float deltaX = (event.deltaX() < 0.f) ? max(event.deltaX(),  -float(maxForwardScrollDelta.width())) : min(event.deltaX(), float(maxBackwardScrollDelta.width()));
++        float deltaY = (event.deltaY() < 0.f) ? max(event.deltaY(),  -float(maxForwardScrollDelta.height())) : min(event.deltaY(), float(maxBackwardScrollDelta.height()));
++
++        IntRect contentRect = m_scrollableArea->visibleContentRect(true);
++        FloatPoint offset = FloatPoint(contentRect.x() - deltaX, contentRect.y() - deltaY);
++        scrollToOffsetWithoutAnimation(offset);
++        break;
++    }
++    case PlatformGestureEvent::TapDownType:
++        fprintf(stderr, "ScrollAnimator::handleGestureEvent TapDownType\n");
++        m_flicker->stopFlick();
++        break;
++    case PlatformGestureEvent::TapType:
++    case PlatformGestureEvent::ZoomBeginType:
++    case PlatformGestureEvent::ZoomUpdateType:
++    case PlatformGestureEvent::ZoomEndType:
++        break;
++    case PlatformGestureEvent::DoubleTapType:
++        zoom(event);
++        break;    
++    }
++}
++#endif
++
+ } // namespace WebCore
+ 
+ #endif // ENABLE(SMOOTH_SCROLLING)
+diff --git third_party/WebKit/Source/WebCore/platform/ScrollAnimatorNone.h third_party/WebKit/Source/WebCore/platform/ScrollAnimatorNone.h
+index 0c0eb16..bc60db2 100644
+--- third_party/WebKit/Source/WebCore/platform/ScrollAnimatorNone.h
++++ third_party/WebKit/Source/WebCore/platform/ScrollAnimatorNone.h
+@@ -49,8 +49,13 @@ public:
+     virtual ~ScrollAnimatorNone();
+ 
+     virtual bool scroll(ScrollbarOrientation, ScrollGranularity, float step, float multiplier);
++    virtual void zoom(const PlatformGestureEvent&);
+     virtual void scrollToOffsetWithoutAnimation(const FloatPoint&);
+ 
++#if ENABLE(GESTURE_EVENTS)
++    virtual void handleGestureEvent(const PlatformGestureEvent&);
++#endif
++
+     virtual void willEndLiveResize();
+     virtual void didAddVerticalScrollbar(Scrollbar*);
+     virtual void didAddHorizontalScrollbar(Scrollbar*);
+@@ -92,6 +97,7 @@ protected:
+         void reset();
+         bool updateDataFromParameters(float step, float multiplier, float scrollableSize, double currentTime, Parameters*);
+         bool animateScroll(double currentTime);
++        bool animateZoom(double currentTime);
+         void updateVisibleLength(LayoutUnit visibleLength);
+ 
+         static double curveAt(Curve, double t);
+@@ -133,6 +139,9 @@ protected:
+ 
+     PerAxisData m_horizontalData;
+     PerAxisData m_verticalData;
++    PerAxisData m_zoomData;
++    PerAxisData m_zoomDataPosX;
++    PerAxisData m_zoomDataPosY;
+ 
+     double m_startTime;
+     Timer<ScrollAnimatorNone> m_animationTimer;
+diff --git third_party/WebKit/Source/WebCore/platform/ScrollableArea.cpp third_party/WebKit/Source/WebCore/platform/ScrollableArea.cpp
+index c7a3997..6b76dc5 100644
+--- third_party/WebKit/Source/WebCore/platform/ScrollableArea.cpp
++++ third_party/WebKit/Source/WebCore/platform/ScrollableArea.cpp
+@@ -123,6 +123,11 @@ void ScrollableArea::scrollToYOffsetWithoutAnimation(float y)
+     scrollToOffsetWithoutAnimation(FloatPoint(scrollAnimator()->currentPosition().x(), y));
+ }
+ 
++void ScrollableArea::zoomAnimatorScaleChanged(double, double, double, bool)
++{
++    // Requires FrameView to override this.
++}
++
+ void ScrollableArea::handleWheelEvent(PlatformWheelEvent& wheelEvent)
+ {
+     scrollAnimator()->handleWheelEvent(wheelEvent);
+diff --git third_party/WebKit/Source/WebCore/platform/ScrollableArea.h third_party/WebKit/Source/WebCore/platform/ScrollableArea.h
+index 5b54cbc..e304270 100644
+--- third_party/WebKit/Source/WebCore/platform/ScrollableArea.h
++++ third_party/WebKit/Source/WebCore/platform/ScrollableArea.h
+@@ -52,6 +52,8 @@ public:
+     void scrollToXOffsetWithoutAnimation(float x);
+     void scrollToYOffsetWithoutAnimation(float x);
+ 
++    virtual void zoomAnimatorScaleChanged(double, double, double, bool);
++
+     void handleWheelEvent(PlatformWheelEvent&);
+ #if ENABLE(GESTURE_EVENTS)
+     void handleGestureEvent(const PlatformGestureEvent&);
+@@ -164,6 +166,7 @@ public:
+ private:
+     // NOTE: Only called from the ScrollAnimator.
+     friend class ScrollAnimator;
++    friend class FlickAnimator;
+     void setScrollOffsetFromAnimation(const IntPoint&);
+ 
+     mutable OwnPtr<ScrollAnimator> m_scrollAnimator;
+diff --git third_party/WebKit/Source/WebCore/platform/chromium/DoubleTapGestureChromium.cpp third_party/WebKit/Source/WebCore/platform/chromium/DoubleTapGestureChromium.cpp
+new file mode 100644
+index 0000000..eac394e
+--- /dev/null
++++ third_party/WebKit/Source/WebCore/platform/chromium/DoubleTapGestureChromium.cpp
+@@ -0,0 +1,169 @@
++/*
++ * Copyright (c) 2011, Google Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ *     * Redistributions of source code must retain the above copyright
++ * notice, this list of conditions and the following disclaimer.
++ *     * Redistributions in binary form must reproduce the above
++ * copyright notice, this list of conditions and the following disclaimer
++ * in the documentation and/or other materials provided with the
++ * distribution.
++ *     * Neither the name of Google Inc. nor the names of its
++ * contributors may be used to endorse or promote products derived from
++ * this software without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "DoubleTapGestureChromium.h"
++
++#include "EventHandler.h"
++#include "GestureRecognizerChromium.h"
++#include "PlatformGestureEvent.h"
++#include <math.h>
++#include "PlatformWheelEvent.h"
++#include <wtf/Assertions.h>
++#include <wtf/MathExtras.h>
++
++
++namespace WebCore {
++
++static const double maximumTouchDownDurationInSecondsForClick = 0.8;
++static const double minimumTouchDownDurationInSecondsForClick = 0.01;
++static const int maximumTouchMoveInPixelsForClick = 20;
++
++DoubleTapGestureChromium::DoubleTapGestureChromium()
++    : m_lastTouchScreenPosition(IntPoint())
++    , m_lastTouchPosition(IntPoint())
++    , m_firstTouchTime(0.0)
++    , m_lastTouchTime(0.0)
++    , m_lastClickTime(0.0)
++    , m_state(NoGesture)
++{
++}
++
++void DoubleTapGestureChromium::reset()
++{
++    m_lastTouchScreenPosition = IntPoint();
++    m_lastTouchPosition = IntPoint();
++    m_firstTouchTime = 0.0;
++    m_lastTouchTime = 0.0;
++    m_lastClickTime = 0.0;
++    m_state = NoGesture;
++    GestureRecognizerChromiumDelegate::reset();
++}
++
++DoubleTapGestureChromium::~DoubleTapGestureChromium()
++{
++}
++
++void DoubleTapGestureChromium::updateValues(const double touchTime, const PlatformTouchPoint& touchPoint)
++{
++    if (m_state == FirstTapReceived) {
++        m_lastClickTime = m_lastTouchTime;
++        m_lastClickPosition = m_lastTouchPosition;
++    }
++
++    if (m_state == NoGesture || m_state == FirstTapReceived) {
++        m_firstTouchTime = touchTime;
++        m_firstTouchPosition = touchPoint.pos();
++    }
++    m_lastTouchTime = touchTime;
++    m_lastTouchPosition = touchPoint.pos();
++    m_lastTouchScreenPosition = touchPoint.screenPos();
++}
++
++PlatformGestureRecognizer::PassGestures DoubleTapGestureChromium::processTouchEventForGestures(const PlatformTouchEvent& event, bool handled, PlatformGestureRecognizer::PassGestures existingGestures)
++{
++    OwnPtr<Vector<PlatformGestureEvent> > gestures(existingGestures);
++    const Vector<PlatformTouchPoint>& points = event.touchPoints();
++    for (unsigned i = 0; i < points.size(); i++) {
++        const PlatformTouchPoint& p = points[i];
++        updateValues(event.timestamp(), p);
++        if (m_state == NoGesture && p.state() == PlatformTouchPoint::TouchPressed) {
++            m_state = PendingFirstTap;
++            handled = false;
++        } else if (m_state == PendingFirstTap) {
++            if (detectTap(p))
++                m_state = FirstTapReceived;
++            handled = false;
++        } else if (m_state == FirstTapReceived) {
++            ASSERT(p.state() == PlatformTouchPoint::TouchPressed);
++            if (isSecondClickInTimeWindow() && isSecondClickInsideManhattanSquare(p))
++                m_state = PendingDoubleTap;
++            else
++                m_state = PendingFirstTap;
++            handled = false;
++        } else if (m_state == PendingDoubleTap) {
++            if (detectTap(p)) {
++                fprintf(stderr, ">>>>>DOUBLE TAP DETECTED\n");
++                m_state = NoGesture;
++                gestures->append(PlatformGestureEvent(PlatformGestureEvent::DoubleTapType, p.pos(), p.screenPos(), m_lastClickTime, /* deltaX */ 0.f, /* deltaY */ 0.f, /* fshiftKey */ false, /* ctrlKey */ false, /* altKey */ false, /* metaKey */ false));
++            }
++            handled = true;
++        }
++     }
++    return GestureRecognizerChromiumDelegate::processTouchEventForGestures(event, handled, gestures.release());
++}
++
++bool DoubleTapGestureChromium::detectTap(const PlatformTouchPoint& tp)
++{
++    switch(tp.state()) {
++        case PlatformTouchPoint::TouchCancelled:
++            reset();
++            return false;
++        case PlatformTouchPoint::TouchReleased:
++            if (isInClickTimeWindow() && isInsideManhattanSquare(tp))
++                return true;
++            m_state = NoGesture;
++            return false;
++        case PlatformTouchPoint::TouchMoved:
++        case PlatformTouchPoint::TouchStationary:
++            if (!isInsideManhattanSquare(tp))
++                m_state = NoGesture;
++            return false;
++        default:
++            fprintf(stderr, ">>>>>WTF: %d\n", tp.state());
++            ASSERT_NOT_REACHED();
++    }
++    return false;
++}
++
++bool DoubleTapGestureChromium::isInClickTimeWindow()
++{
++    double duration(m_lastTouchTime - m_firstTouchTime);
++    return duration >= minimumTouchDownDurationInSecondsForClick && duration < maximumTouchDownDurationInSecondsForClick;
++}
++
++bool DoubleTapGestureChromium::isInsideManhattanSquare(const PlatformTouchPoint& point)
++{
++    int manhattanDistance = abs(point.pos().x() - m_firstTouchPosition.x()) + abs(point.pos().y() - m_firstTouchPosition.y());
++    return manhattanDistance < maximumTouchMoveInPixelsForClick;
++}
++
++bool DoubleTapGestureChromium::isSecondClickInTimeWindow()
++{
++    double duration(m_firstTouchTime - m_lastClickTime);
++    return duration >= minimumTouchDownDurationInSecondsForClick && duration < maximumTouchDownDurationInSecondsForClick;
++}
++
++bool DoubleTapGestureChromium::isSecondClickInsideManhattanSquare(const PlatformTouchPoint& point)
++{
++    int manhattanDistance = abs(point.pos().x() - m_lastClickPosition.x()) + abs(point.pos().y() - m_lastClickPosition.y());
++    return manhattanDistance < maximumTouchMoveInPixelsForClick;
++}
++} // namespace WebCore
+diff --git third_party/WebKit/Source/WebCore/platform/chromium/DoubleTapGestureChromium.h third_party/WebKit/Source/WebCore/platform/chromium/DoubleTapGestureChromium.h
+new file mode 100644
+index 0000000..58ae544
+--- /dev/null
++++ third_party/WebKit/Source/WebCore/platform/chromium/DoubleTapGestureChromium.h
+@@ -0,0 +1,93 @@
++/*
++ * Copyright (c) 2011, Google Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ *     * Redistributions of source code must retain the above copyright
++ * notice, this list of conditions and the following disclaimer.
++ *     * Redistributions in binary form must reproduce the above
++ * copyright notice, this list of conditions and the following disclaimer
++ * in the documentation and/or other materials provided with the
++ * distribution.
++ *     * Neither the name of Google Inc. nor the names of its
++ * contributors may be used to endorse or promote products derived from
++ * this software without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/*
++
++  This file is not to be upstreamed. This file contains additional gestures that
++  are not in the upstreamable gesture manager. The point here is (largely) to
++  discern what we need to do in order to make the GestureRecognizer fully
++  extensible.
++
++  I have left this file in Source/WebCore/platform/chromium for convenience.
++  It shouldn't require being here. It shouldn't depend on anything.
++
++*/
++
++#ifndef DoubleTapGestureChromium_h
++#define DoubleTapGestureChromium_h
++
++#include "GestureRecognizerChromium.h"
++#include "PlatformGestureRecognizer.h"
++#include "PlatformTouchEvent.h"
++#include "Timer.h"
++#include "TouchEvent.h"
++#include <wtf/HashMap.h>
++
++namespace WebCore {
++
++class DoubleTapGestureChromium : public GestureRecognizerChromiumDelegate {
++public:
++    enum State {
++        NoGesture,
++        PendingFirstTap,
++        FirstTapReceived,
++        PendingDoubleTap,
++    };
++
++    DoubleTapGestureChromium();
++    virtual ~DoubleTapGestureChromium();
++
++    static PassRefPtr<GestureRecognizerChromiumDelegate> create();
++    virtual PlatformGestureRecognizer::PassGestures processTouchEventForGestures(const PlatformTouchEvent&, bool handled, PlatformGestureRecognizer::PassGestures);
++    virtual void reset();
++
++private:
++    bool detectTap(const PlatformTouchPoint&);
++    bool isInClickTimeWindow();
++    bool isInsideManhattanSquare(const PlatformTouchPoint& point);
++    bool isSecondClickInTimeWindow();
++    bool isSecondClickInsideManhattanSquare(const PlatformTouchPoint& point);
++    void updateValues(const double, const PlatformTouchPoint&);
++
++    IntPoint m_lastTouchScreenPosition;
++    IntPoint m_lastTouchPosition;
++    IntPoint m_firstTouchPosition;
++    double m_firstTouchTime;
++    double m_lastTouchTime;
++    double m_lastClickTime;
++    IntPoint m_lastClickPosition;
++
++    State m_state;
++};
++
++
++} // namespace WebCore
++
++#endif // DoubleTapGestureChromium_h
+diff --git third_party/WebKit/Source/WebCore/platform/chromium/FlickAnimator.cpp third_party/WebKit/Source/WebCore/platform/chromium/FlickAnimator.cpp
+new file mode 100644
+index 0000000..9a258f5
+--- /dev/null
++++ third_party/WebKit/Source/WebCore/platform/chromium/FlickAnimator.cpp
+@@ -0,0 +1,142 @@
++/*
++ * Copyright (c) 2011, Google Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ *     * Redistributions of source code must retain the above copyright
++ * notice, this list of conditions and the following disclaimer.
++ *     * Redistributions in binary form must reproduce the above
++ * copyright notice, this list of conditions and the following disclaimer
++ * in the documentation and/or other materials provided with the
++ * distribution.
++ *     * Neither the name of Google Inc. nor the names of its
++ * contributors may be used to endorse or promote products derived from
++ * this software without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "FlickAnimator.h"
++
++#include "DoubleTapGestureChromium.h"
++#include "GestureRecognizerChromium.h"
++#include <math.h>
++#include "PlatformGestureEvent.h"
++#include "ScrollableArea.h"
++#include <algorithm>
++#include <wtf/Assertions.h>
++#include <wtf/MathExtras.h>
++
++using namespace std;
++
++namespace WebCore {
++
++static const double frictionPerTimeStamp = .98;
++static const double autoScrollTimeStep = 0.0166;
++static const float initialActualScrollVelocity = 10000.0;
++static const float minimumScrollVelocity = 4.f;
++
++FlickAnimator::FlickAnimator(ScrollableArea* scrollableArea)
++    : m_scrollingTimer(this, &FlickAnimator::scrollingTimerFired)
++    , m_lastTouchPosition(FloatPoint())
++    , m_lastTouchTime(0.0)
++    , m_xVelocity(0.0f)
++    , m_yVelocity(0.0f)
++    , m_scrollableArea(scrollableArea)
++{
++}
++
++void FlickAnimator::reset()
++{
++    m_scrollingTimer.stop();
++    m_lastTouchPosition = FloatPoint();
++    m_lastTouchTime = 0.0;
++    m_xVelocity = 0.0f;
++    m_yVelocity = 0.0f;
++}
++
++FlickAnimator::~FlickAnimator()
++{
++}
++
++void FlickAnimator::startFlick(const PlatformGestureEvent& event) {
++    fprintf(stderr, "FlickAnimator::startFlick...\n");
++
++    if (m_scrollingTimer.isActive())
++        return;
++    
++    IntRect contentRect = m_scrollableArea->visibleContentRect(true);
++    // We animate the corner.
++    m_lastTouchPosition = FloatPoint(contentRect.x(), contentRect.y());
++    // fprintf(stderr, "scrollingTimerFired startFlick, m_lastTouchPosition: %f, %f\n", m_lastTouchPosition.x(), m_lastTouchPosition.y());
++    m_xVelocity = event.deltaX();
++    m_yVelocity = event.deltaY();
++    
++    // Bound the velocity.
++    float sign = signbit(m_xVelocity) ? -1.0 : 1.0;
++    m_xVelocity = sign * WTF::min(initialActualScrollVelocity, fabsf(3.f * m_xVelocity));
++    
++    sign = signbit(m_yVelocity) ? -1.0 : 1.0;
++    m_yVelocity = sign * WTF::min(initialActualScrollVelocity, fabsf(3.f * m_yVelocity));
++
++    // fire once now
++    scrollingTimerFired(&m_scrollingTimer);
++    
++    // and keep firing every autoScrollTimeStep
++    m_scrollingTimer.startRepeating(autoScrollTimeStep);
++}
++
++void FlickAnimator::stopFlick() {
++    fprintf(stderr, "FlickAnimator::stopFlick...\n");
++    if (m_scrollingTimer.isActive()) {
++        m_scrollingTimer.stop();
++        reset();
++    }      
++}
++
++// FIXME: Add bounce at ends.
++void FlickAnimator::scrollingTimerFired(Timer<FlickAnimator>* t) {
++    // fprintf(stderr, "timer fired, velo: %f, %f\n", m_xVelocity, m_yVelocity);
++
++
++    // fprintf(stderr, "timer fired, deltas: %f, %f\n", deltaX, deltaY);
++    m_scrollableArea->scrollToOffsetWithoutAnimation( m_lastTouchPosition );
++
++    IntSize maxForwardScrollDelta = m_scrollableArea->maximumScrollPosition() - m_scrollableArea->scrollPosition();
++    IntSize maxBackwardScrollDelta = m_scrollableArea->scrollPosition() - m_scrollableArea->minimumScrollPosition();
++    float deltaX(m_xVelocity * autoScrollTimeStep);
++    float deltaY(m_yVelocity * autoScrollTimeStep);
++
++    deltaX = (deltaX < 0.f) ? max(deltaX,  -float(maxForwardScrollDelta.width())) : min(deltaX, float(maxBackwardScrollDelta.width()));
++    deltaY = (deltaY < 0.f) ? max(deltaY,  -float(maxForwardScrollDelta.height())) : min(deltaY, float(maxBackwardScrollDelta.height()));
++
++    m_lastTouchPosition = FloatPoint(m_lastTouchPosition.x() - deltaX, m_lastTouchPosition.y() - deltaY);
++
++    // frictionPerTimeStamp must be < 1.
++    m_xVelocity *= frictionPerTimeStamp;
++    m_yVelocity *= frictionPerTimeStamp;
++
++   m_xVelocity = (fabsf(deltaX) < minimumScrollVelocity) ? 0.0 : m_xVelocity;
++   m_yVelocity = (fabsf(deltaY) < minimumScrollVelocity) ? 0.0 : m_yVelocity;
++
++    if ((deltaX == 0.f && deltaY == 0.f) || (fabsf(deltaX) < minimumScrollVelocity && fabsf(deltaY) < minimumScrollVelocity)) {
++        fprintf(stderr, "shutting timer down, velo: \n");
++        m_scrollingTimer.stop();
++    }
++    // fprintf(stderr, "timer done, velo: \n");
++}
++
++} // namespace WebCore
+diff --git third_party/WebKit/Source/WebCore/platform/chromium/FlickAnimator.h third_party/WebKit/Source/WebCore/platform/chromium/FlickAnimator.h
+new file mode 100644
+index 0000000..6985254
+--- /dev/null
++++ third_party/WebKit/Source/WebCore/platform/chromium/FlickAnimator.h
+@@ -0,0 +1,68 @@
++/*
++ * Copyright (c) 2011, Google Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ *     * Redistributions of source code must retain the above copyright
++ * notice, this list of conditions and the following disclaimer.
++ *     * Redistributions in binary form must reproduce the above
++ * copyright notice, this list of conditions and the following disclaimer
++ * in the documentation and/or other materials provided with the
++ * distribution.
++ *     * Neither the name of Google Inc. nor the names of its
++ * contributors may be used to endorse or promote products derived from
++ * this software without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#ifndef FlickAnimator_h
++#define FlickAnimator_h
++ 
++#include "Timer.h"
++#include "FloatPoint.h"
++#include "TouchEvent.h"
++#include <wtf/HashMap.h>
++
++namespace WebCore {
++
++class PlatformGestureEvent;
++class ScrollableArea;
++
++class FlickAnimator {
++public:
++    FlickAnimator(ScrollableArea*);
++    ~FlickAnimator();
++    void reset();
++    void stopFlick();
++    void startFlick(const PlatformGestureEvent&);
++    
++private:
++    void scrollingTimerFired(Timer<FlickAnimator>*);
++    Timer<FlickAnimator> m_scrollingTimer;
++
++    // IntPoint m_lastTouchScreenPosition;
++    FloatPoint m_lastTouchPosition;
++    double m_lastTouchTime;
++    float m_xVelocity;
++    float m_yVelocity;
++    
++    ScrollableArea* m_scrollableArea;
++};
++
++
++} // namespace WebCore
++
++#endif // FlickAnimator_h
+diff --git third_party/WebKit/Source/WebCore/platform/chromium/FlickGestureChromium.cpp third_party/WebKit/Source/WebCore/platform/chromium/FlickGestureChromium.cpp
+new file mode 100644
+index 0000000..efc532e
+--- /dev/null
++++ third_party/WebKit/Source/WebCore/platform/chromium/FlickGestureChromium.cpp
+@@ -0,0 +1,131 @@
++/*
++ * Copyright (c) 2011, Google Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ *     * Redistributions of source code must retain the above copyright
++ * notice, this list of conditions and the following disclaimer.
++ *     * Redistributions in binary form must reproduce the above
++ * copyright notice, this list of conditions and the following disclaimer
++ * in the documentation and/or other materials provided with the
++ * distribution.
++ *     * Neither the name of Google Inc. nor the names of its
++ * contributors may be used to endorse or promote products derived from
++ * this software without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#include "config.h"
++#include "FlickGestureChromium.h"
++
++#include "DoubleTapGestureChromium.h"
++#include "GestureRecognizerChromium.h"
++#include <math.h>
++#include "PlatformGestureEvent.h"
++#include "PlatformWheelEvent.h"
++#include <wtf/Assertions.h>
++#include <wtf/MathExtras.h>
++
++
++namespace WebCore {
++
++static const float minFlickSpeed = 550.0;
++static const double frictionPerTimeStamp = .98;
++static const double autoScrollTimeStep = 0.0166;
++static const float initialActualScrollVelocity = 3000.0;
++
++FlickGestureChromium::FlickGestureChromium()
++    : m_lastTouchScreenPosition(IntPoint())
++    , m_lastTouchPosition(IntPoint())
++    , m_lastTouchTime(0.0)
++    , m_xVelocity(0.0f)
++    , m_yVelocity(0.0f)
++    , m_state(NoGesture)
++{
++}
++
++void FlickGestureChromium::reset()
++{
++    m_lastTouchScreenPosition = IntPoint();
++    m_lastTouchPosition = IntPoint();
++    m_lastTouchTime = 0.0;
++    m_xVelocity = 0.0f;
++    m_yVelocity = 0.0f;
++    m_state = NoGesture;
++    GestureRecognizerChromiumDelegate::reset();
++}
++
++FlickGestureChromium::~FlickGestureChromium()
++{
++}
++
++bool FlickGestureChromium::isOverMinFlickSpeed() {
++    return sqrt(m_xVelocity * m_xVelocity + m_yVelocity * m_yVelocity) > minFlickSpeed;
++}
++
++void FlickGestureChromium::updateValues(const double touchTime, const PlatformTouchPoint& touchPoint)
++{
++    if (m_state == NoGesture && touchPoint.state() == PlatformTouchPoint::TouchPressed) {
++        m_lastTouchTime = touchTime;
++        m_lastTouchPosition = touchPoint.pos();
++        m_lastTouchScreenPosition = touchPoint.screenPos();
++        m_xVelocity = 0.0;
++        m_yVelocity = 0.0;
++    } else  if (touchPoint.state() == PlatformTouchPoint::TouchMoved) {
++        double interval(touchTime - m_lastTouchTime);
++         m_xVelocity = (touchPoint.pos().x() - m_lastTouchPosition.x()) / interval;
++         m_yVelocity = (touchPoint.pos().y() - m_lastTouchPosition.y()) / interval;
++        m_lastTouchPosition = touchPoint.pos();
++        m_lastTouchScreenPosition = touchPoint.screenPos();
++        m_lastTouchTime = touchTime;
++    }
++}
++
++PlatformGestureRecognizer::PassGestures FlickGestureChromium::processTouchEventForGestures(const PlatformTouchEvent& event, bool handled, PlatformGestureRecognizer::PassGestures existingGestures)
++{
++    OwnPtr<Vector<PlatformGestureEvent> > gestures(existingGestures);
++
++    const Vector<PlatformTouchPoint>& points = event.touchPoints();
++    for (unsigned i = 0; i < points.size(); i++) {
++        const PlatformTouchPoint& p = points[i];
++        updateValues(event.timestamp(), p);
++        if (m_state == NoGesture && isOverMinFlickSpeed() && p.state() == PlatformTouchPoint::TouchReleased) {
++            // fprintf(stderr, ">>>>>> dispatching flick start\n");
++            gestures->append(PlatformGestureEvent(PlatformGestureEvent::ScrollEndType, p.pos(), p.screenPos(), m_lastTouchTime, m_xVelocity, m_yVelocity, false, false, false, false, true));
++            
++            m_state = Flick;
++            handled = true;
++        } else if (m_state == Flick && p.state() == PlatformTouchPoint::TouchPressed) {
++            m_state = NoGesture;
++            // fprintf(stderr, ">>>>>> dispatching flick end\n");
++            //gestures->append(PlatformGestureEvent(PlatformGestureEvent::ScrollEndType, p.pos(), p.screenPos(), m_lastTouchTime, 0.0f, 0.0f, false, false, false, false));
++            reset();
++        }
++     }
++    return GestureRecognizerChromiumDelegate::processTouchEventForGestures(event, handled, gestures.release());;
++}
++
++// Replaces the one from somewhere else.
++PassOwnPtr<PlatformGestureRecognizer> PlatformGestureRecognizer::create()
++{
++    GestureRecognizerChromium* gestureRecognizer = new GestureRecognizerChromium();
++    FlickGestureChromium* flickGesture = new FlickGestureChromium();
++    gestureRecognizer->setDelegate(adoptRef(flickGesture));
++
++    return adoptPtr(gestureRecognizer);
++}
++
++} // namespace WebCore
+diff --git third_party/WebKit/Source/WebCore/platform/chromium/FlickGestureChromium.h third_party/WebKit/Source/WebCore/platform/chromium/FlickGestureChromium.h
+new file mode 100644
+index 0000000..03d558f
+--- /dev/null
++++ third_party/WebKit/Source/WebCore/platform/chromium/FlickGestureChromium.h
+@@ -0,0 +1,86 @@
++/*
++ * Copyright (c) 2011, Google Inc. All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions are
++ * met:
++ *
++ *     * Redistributions of source code must retain the above copyright
++ * notice, this list of conditions and the following disclaimer.
++ *     * Redistributions in binary form must reproduce the above
++ * copyright notice, this list of conditions and the following disclaimer
++ * in the documentation and/or other materials provided with the
++ * distribution.
++ *     * Neither the name of Google Inc. nor the names of its
++ * contributors may be used to endorse or promote products derived from
++ * this software without specific prior written permission.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
++ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
++ * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
++ * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
++ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++/*
++
++  This file is not to be upstreamed. This file contains additional gestures that
++  are not in the upstreamable gesture manager. The point here is (largely) to
++  discern what we need to do in order to make the GestureRecognizer fully
++  extensible.
++  
++  I have left this file in Source/WebCore/platform/chromium for convenience.
++  It shouldn't require being here. It shouldn't depend on anything. 
++
++*/
++
++#ifndef ExternalGesturesChromium_h
++#define ExternalGesturesChromium_h
++ 
++#include "GestureRecognizerChromium.h"
++#include "PlatformGestureRecognizer.h"
++#include "PlatformTouchEvent.h"
++#include "Timer.h"
++#include "TouchEvent.h"
++#include <wtf/HashMap.h>
++
++namespace WebCore {
++
++class FlickGestureChromium : public GestureRecognizerChromiumDelegate {
++public:
++    enum State {
++    NoGesture,
++    Flick
++    };
++
++    FlickGestureChromium();
++    virtual ~FlickGestureChromium();
++
++    static PassRefPtr<GestureRecognizerChromiumDelegate> create();
++    virtual PlatformGestureRecognizer::PassGestures processTouchEventForGestures(const PlatformTouchEvent&, bool handled,PlatformGestureRecognizer::PassGestures);
++    virtual void reset();
++
++private:
++    bool isOverMinFlickSpeed();
++    void scrollCore(const IntPoint& pos, const IntPoint& screenPos, float deltaX, float detaY);
++    void updateValues(const double, const PlatformTouchPoint&);
++
++    IntPoint m_lastTouchScreenPosition;
++    IntPoint m_lastTouchPosition;
++    double m_lastTouchTime;
++    float m_xVelocity;
++    float m_yVelocity;
++
++    State m_state;
++};
++
++
++} // namespace WebCore
++
++#endif // ExternalGesturesChromium_h
+diff --git third_party/WebKit/Source/WebCore/platform/chromium/GestureRecognizerChromium.cpp third_party/WebKit/Source/WebCore/platform/chromium/GestureRecognizerChromium.cpp
+index fd743a6..ce67963 100644
+--- third_party/WebKit/Source/WebCore/platform/chromium/GestureRecognizerChromium.cpp
++++ third_party/WebKit/Source/WebCore/platform/chromium/GestureRecognizerChromium.cpp
+@@ -39,6 +39,40 @@ static const double minimumTouchDownDurationInSecondsForClick = 0.01;
+ static const double maximumSecondsBetweenDoubleClick = 0.7;
+ static const int maximumTouchMoveInPixelsForClick = 20;
+ 
++GestureRecognizerChromiumDelegate::GestureRecognizerChromiumDelegate()
++    : m_delegate(0)
++{
++}
++
++GestureRecognizerChromiumDelegate::~GestureRecognizerChromiumDelegate()
++{
++}
++
++
++PassRefPtr<GestureRecognizerChromiumDelegate> GestureRecognizerChromiumDelegate::create()
++{
++    return PassRefPtr<GestureRecognizerChromiumDelegate>();
++}
++
++PlatformGestureRecognizer::PassGestures GestureRecognizerChromiumDelegate::processTouchEventForGestures(const PlatformTouchEvent& touchEvent, bool handled, PlatformGestureRecognizer::PassGestures gestures)
++{
++    if (m_delegate.get())
++        return m_delegate->processTouchEventForGestures(touchEvent, handled, gestures);
++    else
++        return gestures;
++}
++
++void GestureRecognizerChromiumDelegate::reset()
++{
++    if (m_delegate.get())
++        return m_delegate->reset();
++}
++
++void GestureRecognizerChromiumDelegate::setDelegate(PassRefPtr<GestureRecognizerChromiumDelegate> delegate)
++{
++    m_delegate = delegate;
++}
++
+ GestureRecognizerChromium::GestureRecognizerChromium()
+     : m_firstTouchTime(0.0)
+     , m_state(GestureRecognizerChromium::NoGesture)
+@@ -47,6 +81,7 @@ GestureRecognizerChromium::GestureRecognizerChromium()
+     , m_altKey(false)
+     , m_shiftKey(false)
+     , m_metaKey(false)
++    , m_delegate(0)
+ {
+     const unsigned FirstFinger = 0;
+     const PlatformTouchPoint::State Released = PlatformTouchPoint::TouchReleased;
+@@ -130,9 +165,20 @@ PlatformGestureRecognizer::PassGestures GestureRecognizerChromium::processTouchE
+         if (GestureTransitionFunction ef = m_edgeFunctions.get(signature(m_state, p.id(), p.state(), defaultPrevented)))
+             ((*this).*ef)(p, gestures.get());
+     }
++
++    if (m_delegate.get())
++        return m_delegate->processTouchEventForGestures(event, defaultPrevented, gestures.release());
++
+     return gestures.release();
+ }
+ 
++void GestureRecognizerChromium::setDelegate(PassRefPtr<GestureRecognizerChromiumDelegate> delegate)
++{
++    if (m_delegate.get())
++        delegate->setDelegate(m_delegate);
++    m_delegate = delegate;
++}
++
+ void GestureRecognizerChromium::appendScrollGestureBegin(const PlatformTouchPoint& touchPoint, Gestures gestures)
+ {
+     gestures->append(PlatformGestureEvent(PlatformGestureEvent::ScrollBeginType, touchPoint.pos(), touchPoint.screenPos(), m_lastTouchTime, 0.f, 0.f, m_shiftKey, m_ctrlKey, m_altKey, m_metaKey));
+@@ -231,11 +277,13 @@ bool GestureRecognizerChromium::inScroll(const PlatformTouchPoint& point, Gestur
+     return true;
+ }
+ 
++#if 0
+ PassOwnPtr<PlatformGestureRecognizer> PlatformGestureRecognizer::create()
+ {
+     GestureRecognizerChromium* gestureRecognizer = new GestureRecognizerChromium();
+     return adoptPtr(gestureRecognizer);
+ }
++#endif
+ 
+ PlatformGestureRecognizer::PlatformGestureRecognizer()
+ {
+diff --git third_party/WebKit/Source/WebCore/platform/chromium/GestureRecognizerChromium.h third_party/WebKit/Source/WebCore/platform/chromium/GestureRecognizerChromium.h
+index 1f15d37..85d8b43 100644
+--- third_party/WebKit/Source/WebCore/platform/chromium/GestureRecognizerChromium.h
++++ third_party/WebKit/Source/WebCore/platform/chromium/GestureRecognizerChromium.h
+@@ -35,6 +35,7 @@
+ 
+ #include "PlatformTouchEvent.h"
+ #include "PlatformTouchPoint.h"
++#include "RefCounted.h"
+ #include <wtf/HashMap.h>
+ 
+ class InspectableGestureRecognizerChromium;
+@@ -43,6 +44,20 @@ namespace WebCore {
+ 
+ class PlatformGestureEvent;
+ 
++class GestureRecognizerChromiumDelegate : public RefCounted<GestureRecognizerChromiumDelegate> {
++public:
++    GestureRecognizerChromiumDelegate();
++    virtual ~GestureRecognizerChromiumDelegate();
++
++    static PassRefPtr<GestureRecognizerChromiumDelegate> create();
++    virtual PlatformGestureRecognizer::PassGestures  processTouchEventForGestures(const PlatformTouchEvent&, bool defaultPrevented, PlatformGestureRecognizer::PassGestures);
++    virtual void reset();
++    void setDelegate(PassRefPtr<GestureRecognizerChromiumDelegate>);
++
++private:
++    RefPtr<GestureRecognizerChromiumDelegate> m_delegate;
++};
++
+ class GestureRecognizerChromium : public PlatformGestureRecognizer  {
+ public:
+     enum State {
+@@ -60,6 +75,7 @@ public:
+     virtual void reset();
+     virtual PlatformGestureRecognizer::PassGestures  processTouchEventForGestures(const PlatformTouchEvent&, bool defaultPrevented);
+     State state() { return m_state; }
++    void setDelegate(PassRefPtr<GestureRecognizerChromiumDelegate>);
+ 
+ private:
+     friend class ::InspectableGestureRecognizerChromium;
+@@ -97,6 +113,7 @@ private:
+     bool m_altKey;
+     bool m_shiftKey;
+     bool m_metaKey;
++    RefPtr<GestureRecognizerChromiumDelegate> m_delegate;
+ };
+ 
+ } // namespace WebCore
+diff --git third_party/WebKit/Source/WebCore/platform/chromium/PopupContainer.cpp third_party/WebKit/Source/WebCore/platform/chromium/PopupContainer.cpp
+index a0a5a8b..9f5d17f 100644
+--- third_party/WebKit/Source/WebCore/platform/chromium/PopupContainer.cpp
++++ third_party/WebKit/Source/WebCore/platform/chromium/PopupContainer.cpp
+@@ -316,6 +316,9 @@ bool PopupContainer::handleGestureEvent(const PlatformGestureEvent& gestureEvent
+     case PlatformGestureEvent::ScrollBeginType:
+     case PlatformGestureEvent::ScrollEndType:
+     case PlatformGestureEvent::TapDownType:
++    case PlatformGestureEvent::ZoomBeginType:
++    case PlatformGestureEvent::ZoomUpdateType:
++    case PlatformGestureEvent::ZoomEndType:
+         break;
+     }
+     return false;
+diff --git third_party/WebKit/Source/WebCore/platform/graphics/chromium/TiledLayerChromium.cpp third_party/WebKit/Source/WebCore/platform/graphics/chromium/TiledLayerChromium.cpp
+index 42693ea..4548b6d 100644
+--- third_party/WebKit/Source/WebCore/platform/graphics/chromium/TiledLayerChromium.cpp
++++ third_party/WebKit/Source/WebCore/platform/graphics/chromium/TiledLayerChromium.cpp
+@@ -198,7 +198,11 @@ void TiledLayerChromium::updateCompositorResources(GraphicsContext3D* context)
+                 CRASH();
+ 
+             tile->texture()->bindTexture(context);
++#if ENABLE(GESTURE_EVENTS)
++            const GC3Dint filter = GraphicsContext3D::LINEAR;
++#else
+             const GC3Dint filter = m_tiler->hasBorderTexels() ? GraphicsContext3D::LINEAR : GraphicsContext3D::NEAREST;
++#endif
+             GLC(context, context->texParameteri(GraphicsContext3D::TEXTURE_2D, GraphicsContext3D::TEXTURE_MIN_FILTER, filter));
+             GLC(context, context->texParameteri(GraphicsContext3D::TEXTURE_2D, GraphicsContext3D::TEXTURE_MAG_FILTER, filter));
+             GLC(context, context->bindTexture(GraphicsContext3D::TEXTURE_2D, 0));
