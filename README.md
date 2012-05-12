@@ -1,6 +1,24 @@
 Chromium OS for Raspberry Pi
 ============================
 
+Initial notes:
+--------------
+
+* Don't expect to build this and have it work perfectly on a Raspberry Pi, it's a work-in-progress
+* This guide will be much easier to follow if you've built Chromium OS before for another platform. If you've having trouble following it, try following the developer guide (linked before) to build an x86-generic image first, and then come back.
+* These instructions assume that a couple of patches are in place, which are currently waiting to be merged. Until they're merged, apply them manually: http://chromiumcodereview.appspot.com/10387100 and https://gerrit.chromium.org/gerrit/#change,22536
+* If you want to help out, find me in #raspberrypi on Freenode IRC or submit a pull request
+
+Prerequisites:
+--------------
+
+To get started, make sure you have the following:
+
+* a 64-bit build machine, running Ubuntu version 10.04 (other versions/distros might work, but aren't supported, you're on your own)
+* an account with sudo access
+* at least 4GB of RAM (whilst you might be able to build with less, it'll be probably be painfully slow, especially when it comes to building Chrome)
+* a fast Internet connection - you'll need to download several gigabytes of source code, if your connection is slow, that won't be fun
+
 Get the code:
 -------------
 
