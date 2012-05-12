@@ -1,3 +1,6 @@
+# submitted a fix for this upstream, http://chromiumcodereview.appspot.com/10387100
+# once that change lands, this patch will no longer be required as long as armv7=0
+
 --- chromium/src/third_party/ffmpeg/ffmpeg.gyp	2012-02-15 09:56:12.803074092 +0000
 +++ chromium/src/third_party/ffmpeg/ffmpeg.gyp	2012-02-15 10:02:30.885123862 +0000
 @@ -162,19 +162,21 @@

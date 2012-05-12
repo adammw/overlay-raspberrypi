@@ -1,6 +1,8 @@
-#Suggested Build Switches:
-../depot_tools/cros_sdk
-BOARD=arm-generic
+BOARD=raspberrypi
+
+sudo -i
+USE="-thumb -hardened" FEATURES="splitdebug" crossdev -S -v -t armv6j-cros-linux-gnueabi --ex-gdb
+
 ./setup_board --board=${BOARD}
 ./set_shared_user_password.sh
 ./build_packages  --board=${BOARD} --withdev --nowithdebug --nousepkg --nowithautotest
