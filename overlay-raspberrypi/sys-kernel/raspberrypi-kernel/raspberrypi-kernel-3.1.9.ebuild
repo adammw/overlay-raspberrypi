@@ -8,7 +8,7 @@ EGIT_BRANCH="rpi-patches"
 
 # To move up to a new commit, you should update this and then bump the
 # symlink to a new rev.
-EGIT_COMMIT="226df83c04d04433123a7f5fd05f27b10ec56c1a"
+EGIT_COMMIT="c9a577f59c4b6564219fcd7fe36e9b0a4f1910ac"
 
 # This must be inherited *after* EGIT/CROS_WORKON variables defined
 inherit git cros-kernel2
