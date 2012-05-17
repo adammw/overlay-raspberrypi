@@ -1,7 +1,7 @@
-# Copyright (c) 2010 The Chromium OS Authors. All rights reserved.
+# Copyright (c) 2012 The Chromium OS Authors. All rights reserved.
 # Distributed under the terms of the GNU General Public License v2
 
-EAPI=2
+EAPI=4
 
 inherit cros-binary
 
@@ -33,22 +33,11 @@ src_unpack() {
 }
 
 src_install() {
-	insinto /usr/lib
-	newins libEGL.so libEGL.so.1	  	|| die
-	fperms 0755 /usr/lib/libEGL.so.1			|| die
-	dosym libEGL.so.1 /usr/lib/libEGL.so			|| die
+	newlib.so libEGL.so libEGL.so.1
+	dosym libEGL.so.1 /usr/lib/libEGL.so
 
-	newins libGLESv2.so libGLESv2.so.2	  	|| die
-	fperms 0755 /usr/lib/libGLESv2.so.2			|| die
-	dosym libGLESv2.so.2 /usr/lib/libGLESv2.so		|| die
+	newlib.so libGLESv2.so libGLESv2.so.2
+	dosym libGLESv2.so.2 /usr/lib/libGLESv2.so
 
-	newins libbcm_host.so libbcm_host.so	  	|| die
-	fperms 0755 /usr/lib/libbcm_host.so			|| die
-
-	newins libvchiq_arm.so libvchiq_arm.so	  	|| die
-	fperms 0755 /usr/lib/libvchiq_arm.so			|| die
-
-	newins libvcos.so libvcos.so	  	|| die
-	fperms 0755 /usr/lib/libvcos.so			|| die
-
+	dolib.so libbcm_host.so libvchiq_arm.so libvcos.so
 }

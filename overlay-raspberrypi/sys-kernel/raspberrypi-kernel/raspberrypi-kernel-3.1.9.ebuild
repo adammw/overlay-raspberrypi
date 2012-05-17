@@ -8,13 +8,13 @@ EGIT_BRANCH="rpi-patches"
 
 # To move up to a new commit, you should update this and then bump the
 # symlink to a new rev.
-EGIT_COMMIT="c9a577f59c4b6564219fcd7fe36e9b0a4f1910ac"
+EGIT_COMMIT="3fc90c3a4d34eb601f5e2b16db85c8343559657b"
 
 # This must be inherited *after* EGIT/CROS_WORKON variables defined
 inherit git cros-kernel2
 
 DESCRIPTION="Chrome OS Kernel-raspberrypi"
-KEYWORDS="amd64 arm x86"
+KEYWORDS="arm"
 
 DEPEND="!sys-kernel/chromeos-kernel-next
 	!sys-kernel/chromeos-kernel
