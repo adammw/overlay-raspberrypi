@@ -47,7 +47,11 @@ Once you're root, build the toolchain by typing:
 USE="-thumb -hardened hardfp" FEATURES="splitdebug" crossdev -S -t armv6j-cros-linux-gnueabi --ex-gdb
 </pre>
 
-This might take some time, so go get a coffee.
+This might take some time, so go get a coffee. Once that command finishes successuflly, we don't need to be root anymore, so drop root by running:
+
+<pre>
+exit
+</pre>
 
 Board setup:
 ------------
@@ -78,7 +82,7 @@ Building an image:
 Before we can build an image, we need to build all the required packages. Enter the following command to build those (and pray everything compiles):
 
 <pre>
-./build_packages  --board=raspberrypi --withdev --nowithdebug --nousepkg --nowithautotest
+./build_packages --board=raspberrypi --withdev --nowithdebug --nousepkg --nowithautotest
 </pre>
 
 This will take even longer than building the toolchain took. Go get several coffees, and maybe read a book.
